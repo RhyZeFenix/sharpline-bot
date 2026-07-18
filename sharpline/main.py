@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 
 from .config import Config
 from .odds_client import OddsClient
-from .scanner import scan_event
+from .scanner import scan_event, consensus_labels
 from .alerter import AlertStore, DiscordAlerter
 from .kalshi_depth import KalshiDepth
+from .tracker import Tracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,6 +36,7 @@ def run():
     store = AlertStore(cfg.db_path)
     alerter = DiscordAlerter(cfg.discord_webhook_url)
     kalshi = KalshiDepth(cfg.request_timeout)
+    tracker = Tracker(cfg.db_path)
 
     def enrich(edge):
         if edge.book == "kalshi":
@@ -91,7 +93,11 @@ def run():
                         if store.should_alert(edge, cfg.realert_ev_improvement):
                             if alerter.send(enrich(edge)):
                                 store.record(edge)
+                                tracker.record(edge)
                                 n_alerts += 1
+                    # refresh closing-line snapshot for tracked bets (free)
+                    lbl = f"{ev.get('away_team','?')} @ {ev.get('home_team','?')}"
+                    tracker.update_closes(lbl, consensus_labels(ev, cfg))
 
                 # ---- optional player props (credit-heavy) ----
                 if cfg.scan_props and events:
@@ -106,7 +112,15 @@ def run():
                             if store.should_alert(edge, cfg.realert_ev_improvement):
                                 if alerter.send(enrich(edge)):
                                     store.record(edge)
+                                    tracker.record(edge)
                                     n_alerts += 1
+                        lbl = (f"{detail.get('away_team','?')} @ "
+                               f"{detail.get('home_team','?')}")
+                        tracker.update_closes(lbl, consensus_labels(detail, cfg))
+
+            # ---- grade finished games (2 credits/sport, max 2x/hour) ----
+            for gs in tracker.sports_pending():
+                tracker.grade_sport(gs, client.scores(gs))
 
             # ---- budget pacing: stretch sleep so a full day of cycles
             # never exceeds daily_credit_budget ----

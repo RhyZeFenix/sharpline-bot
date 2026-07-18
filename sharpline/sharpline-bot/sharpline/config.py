@@ -13,16 +13,32 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Config:
-    # --- API ---
+    # --- API: The Odds API (Pinnacle ONLY when SGO is configured) ---
     odds_api_key: str = ""                  # set via ODDS_API_KEY env var
-    regions: str = "us,us2,eu,us_ex"        # eu = Pinnacle anchor; us_ex = Kalshi/Novig/Polymarket/ProphetX
-    markets: str = "h2h,spreads,totals"     # core markets scanned every cycle
+    odds_api_bookmakers: str = "pinnacle"   # dual-source mode: bookmakers param (1-10 books = 1 region-equivalent -> 3 credits/sport)
+    regions: str = "us,us2,eu,us_ex"        # legacy single-source mode only (no SGO key set)
+    markets: str = "h2h,spreads,totals"     # NON-OVERLAP: Odds API is game lines only; props NEVER fetched here
     odds_format: str = "decimal"
 
-    # --- Sharp anchor ---
-    sharp_book: str = "pinnacle"          # primary sharp (required unless 2+ others)
-    # weighted consensus: fair prob = weighted avg across sharps present
-    sharp_weights: dict = None            # set in __post_init__ below
+    # --- API: SportsGameOdds (everything except Pinnacle) ---
+    sgo_api_key: str = ""                   # set via SGO_API_KEY env var; empty = legacy single-source mode
+    sgo_leagues: tuple = ("MLB", "WNBA", "NBA", "NFL", "NHL")
+    # SGO leagueID -> Odds API sport key, so score-grading keeps working
+    sgo_league_map: dict = None             # set in __post_init__
+
+    # --- Sweep cadences (dual-source mode) ---
+    sweep_interval_sgo_min: float = 15.0    # soft books + props sweep
+    sweep_interval_pinnacle_min: float = 30.0  # sharp anchor refresh
+
+    # --- Sharp anchors (dual): game lines vs player props ---
+    # Pinnacle is sharpest on game lines (ML/spreads/totals); FanDuel is
+    # sharpest on player props. Each market class gets its own weighted
+    # consensus. A book that anchors a class is never swept as a soft
+    # book *within that class* (FanDuel still gets swept on game lines).
+    sharp_book: str = "pinnacle"            # game-line primary (required unless 2+ others)
+    sharp_book_props: str = "fanduel"       # prop primary (required unless 2+ others)
+    sharp_weights: dict = None              # game lines; set in __post_init__
+    sharp_weights_props: dict = None        # props; set in __post_init__
     devig_method: str = "power"             # "multiplicative" | "power" | "worst_case"
 
     # --- Edge thresholds ---
@@ -62,6 +78,7 @@ class Config:
     sports_refresh_cycles: int = 30         # re-fetch /sports list every N cycles
     exclude_sports: tuple = ("politics",)
     discord_webhook_url: str = ""           # set via DISCORD_WEBHOOK_URL env var
+    daily_report_hour_utc: int = 13         # post tracker summary to Discord daily at this UTC hour (-1 = off)
     db_path: str = "alerts.db"
     request_timeout: int = 20
 
@@ -73,9 +90,21 @@ class Config:
     book_fee_pct: dict = None
 
     def __post_init__(self):
+        if self.sgo_league_map is None:
+            object.__setattr__(self, "sgo_league_map", {
+                "MLB": "baseball_mlb", "WNBA": "basketball_wnba",
+                "NBA": "basketball_nba", "NFL": "americanfootball_nfl",
+                "NHL": "icehockey_nhl",
+            })
         if self.sharp_weights is None:
             object.__setattr__(self, "sharp_weights",
                                {"pinnacle": 0.70, "betonlineag": 0.20, "lowvig": 0.10})
+        if self.sharp_weights_props is None:
+            # FanDuel-anchored prop consensus. Pinnacle/BetOnline post
+            # some props and serve as secondaries where present; weights
+            # renormalize over whichever anchors actually price a market.
+            object.__setattr__(self, "sharp_weights_props",
+                               {"fanduel": 0.60, "pinnacle": 0.25, "betonlineag": 0.15})
         if self.book_fee_pct is None:
             object.__setattr__(self, "book_fee_pct",
                                {"kalshi": 1.5, "polymarket": 0.0,
