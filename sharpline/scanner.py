@@ -21,6 +21,23 @@ from .config import Config
 
 log = logging.getLogger("sharpline.scanner")
 
+# Any Odds API market key with one of these prefixes is a player prop
+# and gets the FanDuel-anchored consensus instead of the Pinnacle one.
+PROP_PREFIXES = ("player_", "pitcher_", "batter_", "goalie_", "alternate_player_")
+
+
+def is_prop(market_key: str) -> bool:
+    return market_key.startswith(PROP_PREFIXES)
+
+
+def weights_for(market_key: str, cfg: Config) -> dict:
+    """Sharp weights for this market's class."""
+    return cfg.sharp_weights_props if is_prop(market_key) else cfg.sharp_weights
+
+
+def primary_for(market_key: str, cfg: Config) -> str:
+    return cfg.sharp_book_props if is_prop(market_key) else cfg.sharp_book
+
 
 @dataclass
 class Edge:
@@ -82,10 +99,15 @@ def _hours_to_start(commence_iso: str) -> Optional[float]:
 
 
 def _sharp_fairs(book: dict, cfg: Config) -> Dict[Tuple, float]:
-    """All fair probs one sharp book implies, keyed by (mkey, outcome_key)."""
+    """All fair probs one sharp book implies, keyed by (mkey, outcome_key).
+    Only markets whose class this book anchors are included — e.g.
+    FanDuel contributes prop fairs but never game-line fairs."""
     fairs: Dict[Tuple, float] = {}
+    bkey = book.get("key")
     for mkt in book.get("markets", []):
         mkey = mkt["key"]
+        if bkey not in weights_for(mkey, cfg):
+            continue
         groups: Dict[Tuple, List[dict]] = {}
         for o in mkt.get("outcomes", []):
             groups.setdefault(_group_key(mkey, o), []).append(o)
@@ -104,18 +126,24 @@ def _sharp_fairs(book: dict, cfg: Config) -> Dict[Tuple, float]:
 
 def consensus_labels(event: dict, cfg: Config) -> Dict[Tuple[str, str], float]:
     """Weighted consensus fair prob keyed by (market, selection label).
-    Used by the tracker to capture closing lines."""
+    Used by the tracker to capture closing lines. Weights are chosen per
+    market class: Pinnacle-anchored for game lines, FanDuel-anchored for
+    props — so prop CLV is measured against the FanDuel-anchored close."""
     books = event.get("bookmakers", [])
-    sharps = [(b, cfg.sharp_weights[b["key"]])
-              for b in books if b.get("key") in cfg.sharp_weights]
+    all_anchor_keys = set(cfg.sharp_weights) | set(cfg.sharp_weights_props)
+    sharps = [b for b in books if b.get("key") in all_anchor_keys]
     if not sharps:
         return {}
     num: Dict[Tuple, float] = {}
     den: Dict[Tuple, float] = {}
     labels: Dict[Tuple, str] = {}
-    for b, w in sharps:
+    for b in sharps:
+        bkey = b["key"]
         for mkt in b.get("markets", []):
             mkey = mkt["key"]
+            w = weights_for(mkey, cfg).get(bkey)
+            if w is None:
+                continue
             groups: Dict[Tuple, List[dict]] = {}
             for o in mkt.get("outcomes", []):
                 groups.setdefault(_group_key(mkey, o), []).append(o)
@@ -147,43 +175,53 @@ def scan_event(event: dict, sport: str, cfg: Config,
     if hrs is not None and (hrs > cfg.max_hours_to_start or hrs < cfg.min_hours_to_start):
         return edges
 
-    # ---- gather sharp anchors present ----
-    sharps = [(b, cfg.sharp_weights[b["key"]])
-              for b in books if b.get("key") in cfg.sharp_weights]
+    # ---- gather every book that anchors ANY market class ----
+    all_anchor_keys = set(cfg.sharp_weights) | set(cfg.sharp_weights_props)
+    sharps = [b for b in books if b.get("key") in all_anchor_keys]
     if not sharps:
-        return edges
-    sharp_keys = {b["key"] for b, _ in sharps}
-    # require the primary sharp OR at least two secondaries
-    if cfg.sharp_book not in sharp_keys and len(sharps) < 2:
         return edges
 
     # ---- weighted consensus fair prob per (market, outcome) ----
+    # _sharp_fairs already drops markets a book doesn't anchor, and the
+    # weight is looked up per market class, so game lines blend the
+    # Pinnacle-anchored set while props blend the FanDuel-anchored set.
     num: Dict[Tuple, float] = {}
     den: Dict[Tuple, float] = {}
     contributors: Dict[Tuple, List[str]] = {}
-    for b, w in sharps:
+    for b in sharps:
+        bkey = b["key"]
         for k, p in _sharp_fairs(b, cfg).items():
+            w = weights_for(k[0], cfg)[bkey]
             num[k] = num.get(k, 0.0) + w * p
             den[k] = den.get(k, 0.0) + w
-            contributors.setdefault(k, []).append(b["key"])
+            contributors.setdefault(k, []).append(bkey)
     consensus = {k: num[k] / den[k] for k in num}
 
     event_label = f"{event.get('away_team','?')} @ {event.get('home_team','?')}"
-    min_ev = cfg.min_ev_pct_props if is_props else cfg.min_ev_pct
 
     # ---- sweep soft books ----
     for book in books:
         bkey = book.get("key")
-        if bkey in sharp_keys:
-            continue
-        if cfg.my_books and bkey not in cfg.my_books:
-            continue
         for mkt in book.get("markets", []):
             mkey = mkt["key"]
+            # a book never gets swept in a market class it anchors —
+            # FanDuel is excluded from prop sweeps but IS swept on
+            # game lines (where it's just another soft book).
+            if bkey in weights_for(mkey, cfg):
+                continue
+            if cfg.my_books and bkey not in cfg.my_books:
+                continue
+            min_ev = cfg.min_ev_pct_props if (is_props or is_prop(mkey)) \
+                else cfg.min_ev_pct
             for so in mkt.get("outcomes", []):
                 k = (mkey, _outcome_key(mkey, so))
                 p_fair = consensus.get(k)
                 if p_fair is None:
+                    continue
+                # require the class primary in this market's consensus,
+                # OR at least two secondary sharps agreeing
+                contribs = contributors.get(k, [])
+                if primary_for(mkey, cfg) not in contribs and len(contribs) < 2:
                     continue
                 if not (cfg.min_fair_prob <= p_fair <= cfg.max_fair_prob):
                     continue
@@ -204,6 +242,6 @@ def scan_event(event: dict, sport: str, cfg: Config,
                     ev=e,
                     stake_units=kelly_units(
                         p_fair, price, cfg.kelly_fraction, cfg.bankroll_units),
-                    anchor="+".join(contributors[k]),
+                    anchor="+".join(contribs),
                 ))
     return edges

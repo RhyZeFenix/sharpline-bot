@@ -170,3 +170,64 @@ class Tracker:
         if n:
             log.info("Graded %d bets for %s.", n, sport)
         return n
+
+    # ---------- manual grading (props) ----------
+
+    def pending(self, props_only: bool = False) -> list:
+        """Ungraded rows, oldest first: (key, commence, ev_open, clv_pct)."""
+        rows = self.conn.execute(
+            "SELECT key, commence, ev_open, clv_pct FROM tracked "
+            "WHERE result IS NULL ORDER BY commence"
+        ).fetchall()
+        if props_only:
+            rows = [r for r in rows
+                    if r[0].split("|")[1] not in GRADABLE]
+        return rows
+
+    def manual_grade(self, key_substring: str, result: str) -> int:
+        """Grade rows whose key contains the substring. Returns #updated.
+        result: win | loss | push | void (void = no bet, excluded from P/L)."""
+        if result not in ("win", "loss", "push", "void"):
+            raise ValueError(f"Bad result: {result}")
+        rows = self.conn.execute(
+            "SELECT key FROM tracked WHERE result IS NULL AND key LIKE ?",
+            (f"%{key_substring}%",),
+        ).fetchall()
+        for (key,) in rows:
+            self.conn.execute(
+                "UPDATE tracked SET result = ?, graded_ts = ? WHERE key = ?",
+                (result, _now(), key),
+            )
+        self.conn.commit()
+        return len(rows)
+
+
+def _cli():
+    """
+    Manual grading CLI (props aren't auto-gradable):
+      python -m sharpline.tracker pending [props]
+      python -m sharpline.tracker grade "<key substring>" win|loss|push|void
+    """
+    import sys
+    args = sys.argv[1:]
+    t = Tracker("alerts.db")
+    if args[:1] == ["pending"]:
+        rows = t.pending(props_only=(args[1:2] == ["props"]))
+        if not rows:
+            print("Nothing pending.")
+            return
+        for key, commence, ev, clv in rows:
+            clv_s = f"{clv:+.2f}%" if clv is not None else "  n/a"
+            print(f"  {commence}  EV {ev:+.2f}%  CLV {clv_s}  {key}")
+        print(f"\n{len(rows)} pending. Grade with:\n"
+              '  python -m sharpline.tracker grade "<key substring>" win|loss|push|void')
+    elif args[:1] == ["grade"] and len(args) == 3:
+        n = t.manual_grade(args[1], args[2])
+        print(f"Graded {n} row(s) as {args[2]}."
+              if n else f"No pending rows match {args[1]!r}.")
+    else:
+        print(_cli.__doc__)
+
+
+if __name__ == "__main__":
+    _cli()

@@ -47,6 +47,28 @@ class OddsClient:
             regions=regions, markets=markets, oddsFormat=odds_format,
         ) or []
 
+    GAME_LINE_MARKETS = ("h2h", "spreads", "totals")
+
+    def pinnacle_odds(self, sport: str, markets: str, odds_format: str,
+                      bookmakers: str = "pinnacle") -> list:
+        """Dual-source mode: fetch ONLY the sharp anchor's game lines.
+        Cost: 3 credits/sport (1-10 books = 1 region-equivalent x 3 markets).
+        NON-OVERLAP (Odds API side): response is filtered to the anchor
+        book(s) and to game-line markets — props can never enter the
+        pipeline from this source even if the request params change."""
+        events = self._get(
+            f"/sports/{sport}/odds",
+            bookmakers=bookmakers, markets=markets, oddsFormat=odds_format,
+        ) or []
+        allowed = set(bookmakers.split(","))
+        for ev in events:
+            ev["bookmakers"] = [
+                {**b, "markets": [m for m in b.get("markets", [])
+                                  if m.get("key") in self.GAME_LINE_MARKETS]}
+                for b in ev.get("bookmakers", []) if b.get("key") in allowed
+            ]
+        return events
+
     def scores(self, sport: str, days_from: int = 3) -> list:
         """Completed game scores (costs 2 credits per call)."""
         return self._get(f"/sports/{sport}/scores", daysFrom=days_from) or []

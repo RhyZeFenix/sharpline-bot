@@ -48,6 +48,23 @@ class DiscordAlerter:
     def __init__(self, webhook_url: str):
         self.url = webhook_url
 
+    def send_text(self, content: str) -> bool:
+        """Plain-text post (used by the daily tracker report)."""
+        if not self.url:
+            log.info("No webhook set — printing:\n%s", content)
+            return True
+        try:
+            r = requests.post(self.url, json={"content": content[:2000]},
+                              timeout=10)
+            if r.status_code == 429:
+                time.sleep(2)
+                r = requests.post(self.url, json={"content": content[:2000]},
+                                  timeout=10)
+            return r.status_code in (200, 204)
+        except requests.RequestException as e:
+            log.error("Discord send failed: %s", e)
+            return False
+
     def send(self, edge: Edge) -> bool:
         if not self.url:
             log.info("No webhook set — printing edge:\n%s", self._text(edge))
