@@ -79,7 +79,7 @@ class Config:
     exclude_sports: tuple = ("politics",)
     discord_webhook_url: str = ""           # set via DISCORD_WEBHOOK_URL env var
     daily_report_hour_utc: int = 13         # post tracker summary to Discord daily at this UTC hour (-1 = off)
-    db_path: str = "alerts.db"
+    db_path: str = "/data/alerts.db"
     request_timeout: int = 20
 
     # Books you actually hold accounts at. Empty = alert on every book.
