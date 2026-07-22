@@ -54,6 +54,7 @@ class Edge:
     stake_units: float
     anchor: str
     depth: str = ""
+    deeplink: str = ""      # direct add-to-betslip URL when the book provides one
 
     @property
     def key(self) -> str:
@@ -225,6 +226,42 @@ def scan_event(event: dict, sport: str, cfg: Config,
                     continue
                 if not (cfg.min_fair_prob <= p_fair <= cfg.max_fair_prob):
                     continue
+
+                # ---- DFS pick'em apps: fixed-multiplier EV ----
+                # Underdog/Sleeper/PrizePicks aren't priced books — their
+                # "odds" are synthetic. A leg is +EV when the FanDuel-
+                # anchored fair prob at the SAME line beats the per-leg
+                # breakeven of the flagship entry: p_be = (1/mult)^(1/n).
+                if bkey in (cfg.dfs_entries or {}):
+                    if not is_prop(mkey):
+                        continue  # pick'em apps are props only
+                    n_picks, mult = cfg.dfs_entries[bkey]
+                    p_be = (1.0 / mult) ** (1.0 / n_picks)
+                    leg_edge = (p_fair - p_be) * 100.0
+                    if leg_edge < cfg.min_dfs_leg_edge_pct:
+                        continue
+                    p_entry = p_fair ** n_picks
+                    edges.append(Edge(
+                        sport=sport,
+                        event=event_label,
+                        commence=commence,
+                        market=mkey,
+                        selection=_label(mkey, so),
+                        book=bkey,
+                        odds=mult,                      # entry payout multiplier
+                        fair_prob=p_fair,
+                        fair_odds=1.0 / p_fair,
+                        ev=(p_entry * mult - 1.0) * 100.0,  # entry EV if all legs this strong
+                        stake_units=kelly_units(
+                            p_entry, mult, cfg.kelly_fraction,
+                            cfg.bankroll_units),
+                        anchor="+".join(contribs),
+                        depth=(f"{n_picks}-pick {mult:g}x | leg BE "
+                               f"{p_be * 100:.1f}% | leg edge {leg_edge:+.1f}%"),
+                        deeplink=so.get("deeplink", ""),
+                    ))
+                    continue
+
                 price = so["price"]
                 e = ev_pct(p_fair, price) - cfg.book_fee_pct.get(bkey, 0.0)
                 if e < min_ev:
@@ -243,5 +280,6 @@ def scan_event(event: dict, sport: str, cfg: Config,
                     stake_units=kelly_units(
                         p_fair, price, cfg.kelly_fraction, cfg.bankroll_units),
                     anchor="+".join(contribs),
+                    deeplink=so.get("deeplink", ""),
                 ))
     return edges

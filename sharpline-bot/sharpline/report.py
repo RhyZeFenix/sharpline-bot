@@ -79,12 +79,21 @@ def summary_text(db: str = "alerts.db") -> str:
 
     lines.append("")
     lines.append("By book:")
-    for book, cnt, avg_ev, avg_clv in conn.execute(
-        "SELECT book, COUNT(*), AVG(ev_open), AVG(clv_pct) "
+    for (book, cnt, avg_ev, avg_clv, w, l, p, units) in conn.execute(
+        "SELECT book, COUNT(*), AVG(ev_open), AVG(clv_pct), "
+        "SUM(CASE WHEN result='win' THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN result='loss' THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN result='push' THEN 1 ELSE 0 END), "
+        "SUM(CASE WHEN result='win' THEN price-1 "
+        "    WHEN result='loss' THEN -1 ELSE 0 END) "
         "FROM tracked GROUP BY book ORDER BY COUNT(*) DESC"):
+        w, l, p, units = w or 0, l or 0, p or 0, units or 0.0
+        settled = w + l
         clv_s = f"{avg_clv:+.2f}%" if avg_clv is not None else "n/a"
-        lines.append(f"  {book:<15} {cnt:>4} alerts | "
-                     f"avg EV {avg_ev:+.2f}% | avg CLV {clv_s}")
+        roi_s = f"{units / settled * 100:+.1f}%" if settled else "  n/a"
+        lines.append(f"  {book:<13} {cnt:>4} picks | {w}-{l}-{p} | "
+                     f"{units:+.2f}u | ROI {roi_s} | "
+                     f"avg EV {avg_ev:+.2f}% | CLV {clv_s}")
     return "\n".join(lines)
 
 

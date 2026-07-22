@@ -27,6 +27,7 @@ BASE = "https://api.sportsgameodds.com/v2"
 BOOK_KEY_MAP = {
     "betonline": "betonlineag",
     "lowvig": "lowvig",
+    "prophetexchange": "prophetx",   # SGO's ID for ProphetX
 }
 
 # Books whose prices must never come from SGO (anchor sourced elsewhere),
@@ -168,20 +169,30 @@ class SGOClient:
         return None
 
     def events(self, league_ids: List[str], max_hours_ahead: float = 48.0,
-               finalized: bool = False) -> List[dict]:
+               finalized: bool = False, lookback_hours: float = 40.0) -> List[dict]:
         """All events with odds inside the window, cursor-paginated.
-        One object billed per event returned — books/markets are free."""
+        One object billed per event returned — books/markets are free.
+        finalized=True instead returns completed events from the last
+        lookback_hours (for grading), window-bounded so we never page
+        through history."""
         now = datetime.now(timezone.utc)
         out: List[dict] = []
-        params = {
-            "leagueID": ",".join(league_ids),
-            "oddsAvailable": "true",
-            "startsAfter": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "startsBefore": (now + timedelta(hours=max_hours_ahead))
-                .strftime("%Y-%m-%dT%H:%M:%SZ"),
-        }
         if finalized:
-            params = {"leagueID": ",".join(league_ids), "finalized": "true"}
+            params = {
+                "leagueID": ",".join(league_ids),
+                "finalized": "true",
+                "startsAfter": (now - timedelta(hours=lookback_hours))
+                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "startsBefore": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+        else:
+            params = {
+                "leagueID": ",".join(league_ids),
+                "oddsAvailable": "true",
+                "startsAfter": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "startsBefore": (now + timedelta(hours=max_hours_ahead))
+                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
         cursor = None
         while True:
             if cursor:
@@ -192,6 +203,28 @@ class SGOClient:
             if not cursor:
                 break
         return out
+
+
+def prop_scores(ev: dict) -> dict:
+    """From a finalized SGO event, the actual stat value per player prop:
+    {(event_label, market_key, player_name): score}. Drives auto-grading
+    of over/under props (yn props stay manual)."""
+    home, away = _team_name(ev, "home"), _team_name(ev, "away")
+    label = f"{away} @ {home}"
+    out = {}
+    for odd in (ev.get("odds") or {}).values():
+        pid = odd.get("playerID") or ""
+        if not pid or odd.get("betTypeID") != "ou":
+            continue
+        score = odd.get("score")
+        if score is None:
+            continue
+        try:
+            score = float(score)
+        except (TypeError, ValueError):
+            continue
+        out[(label, f"player_{odd.get('statID')}", _player_name(ev, pid))] = score
+    return out
 
 
 def normalize_event(ev: dict, league_map: Dict[str, str]) -> Optional[dict]:
@@ -224,6 +257,8 @@ def normalize_event(ev: dict, league_map: Dict[str, str]) -> Optional[dict]:
             if dec is None or dec <= 1.0:
                 continue
             outcome = {"name": name, "price": dec}
+            if bo.get("deeplink"):
+                outcome["deeplink"] = bo["deeplink"]
             if desc:
                 outcome["description"] = desc
             if pt_field:

@@ -23,6 +23,11 @@ def build_config() -> Config:
     return Config(
         odds_api_key=os.environ.get("ODDS_API_KEY", ""),
         sgo_api_key=os.environ.get("SGO_API_KEY", ""),
+        supabase_url=os.environ.get("SUPABASE_URL", ""),
+        discord_results_webhook_url=os.environ.get(
+            "DISCORD_RESULTS_WEBHOOK_URL", ""),
+        book_webhooks_json=os.environ.get("BOOK_WEBHOOKS_JSON", ""),
+        supabase_service_key=os.environ.get("SUPABASE_SERVICE_KEY", ""),
         discord_webhook_url=os.environ.get("DISCORD_WEBHOOK_URL", ""),
         scan_props=os.environ.get("SCAN_PROPS", "0") == "1",
     )
@@ -45,7 +50,11 @@ def run_dual(cfg: Config):
     Non-overlap: Pinnacle enters ONLY via OddsClient.pinnacle_odds (game
     lines only); SGO's adapter drops any pinnacle entries and is the ONLY
     source of props and soft prices."""
-    from .sgo_client import SGOClient, normalize_event, merge_pinnacle, norm_team
+    import json as _json
+    import re as _re
+    from .sgo_client import (SGOClient, normalize_event, merge_pinnacle,
+                             norm_team, prop_scores)
+    from .supabase_writer import SupabaseWriter
 
     client = OddsClient(cfg.odds_api_key, cfg.request_timeout)
     sgo = SGOClient(cfg.sgo_api_key, cfg.request_timeout)
@@ -53,6 +62,23 @@ def run_dual(cfg: Config):
     alerter = DiscordAlerter(cfg.discord_webhook_url)
     kalshi = KalshiDepth(cfg.request_timeout)
     tracker = Tracker(cfg.db_path)
+    supa = SupabaseWriter(cfg.supabase_url, cfg.supabase_service_key)
+    if supa.enabled:
+        log.info("Supabase mirror enabled.")
+    # results/reports get their own channel when configured
+    results_alerter = DiscordAlerter(
+        cfg.discord_results_webhook_url or cfg.discord_webhook_url)
+    # optional per-book channels: BOOK_WEBHOOKS_JSON = {"draftkings": "https://...", ...}
+    book_alerters = {}
+    if cfg.book_webhooks_json:
+        try:
+            book_alerters = {b: DiscordAlerter(u) for b, u in
+                             _json.loads(cfg.book_webhooks_json).items()}
+            log.info("Per-book Discord routing for: %s",
+                     ", ".join(book_alerters))
+        except (ValueError, AttributeError) as e:
+            log.warning("BOOK_WEBHOOKS_JSON invalid, ignoring: %s", e)
+    _PROP_SEL = _re.compile(r"^(.+?) (Over|Under) ([0-9.]+)$")
 
     def enrich(edge):
         if edge.book == "kalshi":
@@ -68,6 +94,7 @@ def run_dual(cfg: Config):
     sports = [cfg.sgo_league_map[lg] for lg in cfg.sgo_leagues
               if lg in cfg.sgo_league_map]
     last_pinn = last_sgo = 0.0
+    last_grade_sync = time.time()   # only announce grades from this boot on
     last_report_date = None
     pinn_s = cfg.sweep_interval_pinnacle_min * 60
     sgo_s = cfg.sweep_interval_sgo_min * 60
@@ -107,6 +134,73 @@ def run_dual(cfg: Config):
                     # grade finished game lines while we're here (2 cr/sport)
                     for gs in tracker.sports_pending():
                         tracker.grade_sport(gs, client.scores(gs))
+                    # ---- auto-grade props via SGO finalized box scores ----
+                    pend = [(k, c, mk, sel) for k, c, mk, sel
+                            in tracker.pending_prop_rows()
+                            if not mk.endswith("_yn")]
+                    started = []
+                    now_dt = datetime.now(timezone.utc)
+                    for k, c, mk, sel in pend:
+                        try:
+                            t0 = datetime.fromisoformat(
+                                c.replace("Z", "+00:00"))
+                            if (now_dt - t0).total_seconds() > 2.5 * 3600:
+                                started.append((k, mk, sel))
+                        except (ValueError, AttributeError):
+                            continue
+                    if started:
+                        try:
+                            scores = {}
+                            for fev in sgo.events(list(cfg.sgo_leagues),
+                                                  finalized=True):
+                                scores.update(prop_scores(fev))
+                            n_props = 0
+                            for k, mk, sel in started:
+                                mo = _PROP_SEL.match(sel)
+                                if not mo:
+                                    continue
+                                sc = scores.get(
+                                    (k.split("|")[0], mk, mo.group(1)))
+                                if sc is None:
+                                    continue
+                                point = float(mo.group(3))
+                                if sc == point:
+                                    result = "push"
+                                elif (sc > point) == (mo.group(2) == "Over"):
+                                    result = "win"
+                                else:
+                                    result = "loss"
+                                if tracker.set_result(k, result):
+                                    n_props += 1
+                            if n_props:
+                                log.info("Auto-graded %d props via SGO "
+                                         "box scores.", n_props)
+                        except Exception:
+                            log.exception("SGO prop grading failed; "
+                                          "will retry next cycle.")
+
+                    # ---- sync fresh grades -> Supabase + Discord settle notice ----
+                    newly = tracker.graded_since(last_grade_sync)
+                    if newly:
+                        emoji = {"win": "✅", "loss": "❌",
+                                 "push": "➖", "void": "⚪"}
+                        lines = []
+                        for (key, sel, book, price, result,
+                             clv, gts) in newly:
+                            supa.update_result(key, result, clv)
+                            units = ((price - 1.0) if result == "win"
+                                     else (-1.0 if result == "loss" else 0.0))
+                            line = (f"{emoji.get(result, '•')} {sel} @ {book} "
+                                    f"— {key.split('|')[0]}: {result.upper()} "
+                                    f"({units:+.2f}u)")
+                            if clv is not None:
+                                line += f", CLV {clv:+.1f}%"
+                            lines.append(line)
+                            last_grade_sync = max(last_grade_sync, gts)
+                        results_alerter.send_text(
+                            "**Settled picks**\n" + "\n".join(lines[:25]))
+                        log.info("Synced %d grades to Supabase/Discord.",
+                                 len(newly))
                     log.info("Anchor refresh: %d Pinnacle events cached. "
                              "Credits left: %s", fresh, client.credits_remaining)
                 last_pinn = now
@@ -127,9 +221,11 @@ def run_dual(cfg: Config):
                     for edge in scan_event(ev, sport, cfg):
                         n_edges += 1
                         if store.should_alert(edge, cfg.realert_ev_improvement):
-                            if alerter.send(enrich(edge)):
+                            dest = book_alerters.get(edge.book, alerter)
+                            if dest.send(enrich(edge)):
                                 store.record(edge)
                                 tracker.record(edge)
+                                supa.insert_alert(edge)
                                 n_alerts += 1
                     lbl = f"{ev.get('away_team','?')} @ {ev.get('home_team','?')}"
                     tracker.update_closes(lbl, consensus_labels(ev, cfg))
@@ -145,7 +241,8 @@ def run_dual(cfg: Config):
                     and now_utc.hour >= cfg.daily_report_hour_utc
                     and last_report_date != now_utc.date()):
                 from .report import summary_text
-                if alerter.send_text(f"```\n{summary_text(cfg.db_path)}\n```"):
+                if results_alerter.send_text(
+                        f"```\n{summary_text(cfg.db_path)}\n```"):
                     last_report_date = now_utc.date()
                     log.info("Posted daily report to Discord.")
 
@@ -236,7 +333,8 @@ def run_legacy(cfg: Config):
                     for edge in scan_event(ev, sport, cfg):
                         n_edges += 1
                         if store.should_alert(edge, cfg.realert_ev_improvement):
-                            if alerter.send(enrich(edge)):
+                            dest = book_alerters.get(edge.book, alerter)
+                            if dest.send(enrich(edge)):
                                 store.record(edge)
                                 tracker.record(edge)
                                 n_alerts += 1
@@ -255,7 +353,8 @@ def run_legacy(cfg: Config):
                         for edge in scan_event(detail, sport, cfg, is_props=True):
                             n_edges += 1
                             if store.should_alert(edge, cfg.realert_ev_improvement):
-                                if alerter.send(enrich(edge)):
+                                dest = book_alerters.get(edge.book, alerter)
+                            if dest.send(enrich(edge)):
                                     store.record(edge)
                                     tracker.record(edge)
                                     n_alerts += 1

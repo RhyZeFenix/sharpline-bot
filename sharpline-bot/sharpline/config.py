@@ -26,6 +26,18 @@ class Config:
     # SGO leagueID -> Odds API sport key, so score-grading keeps working
     sgo_league_map: dict = None             # set in __post_init__
 
+    # --- Supabase mirror (website feed; empty = disabled) ---
+    supabase_url: str = ""                  # set via SUPABASE_URL env var
+    supabase_service_key: str = ""          # set via SUPABASE_SERVICE_KEY env var
+
+    # --- DFS pick'em apps ---
+    # app -> (picks, payout multiplier) for the flagship entry used in
+    # EV math. VERIFY these against each app's current payout tables —
+    # they change. Legs alert when fair prob beats (1/mult)^(1/picks)
+    # by at least min_dfs_leg_edge_pct.
+    dfs_entries: dict = None                # set in __post_init__
+    min_dfs_leg_edge_pct: float = 2.0       # fair prob - breakeven, in points
+
     # --- Sweep cadences (dual-source mode) ---
     sweep_interval_sgo_min: float = 15.0    # soft books + props sweep
     sweep_interval_pinnacle_min: float = 30.0  # sharp anchor refresh
@@ -78,8 +90,10 @@ class Config:
     sports_refresh_cycles: int = 30         # re-fetch /sports list every N cycles
     exclude_sports: tuple = ("politics",)
     discord_webhook_url: str = ""           # set via DISCORD_WEBHOOK_URL env var
+    discord_results_webhook_url: str = ""   # DISCORD_RESULTS_WEBHOOK_URL; results/reports channel (falls back to main)
+    book_webhooks_json: str = ""            # BOOK_WEBHOOKS_JSON: {"book": "webhook url", ...} per-book channels
     daily_report_hour_utc: int = 13         # post tracker summary to Discord daily at this UTC hour (-1 = off)
-    db_path: str = "/data/alerts.db"
+    db_path: str = "alerts.db"
     request_timeout: int = 20
 
     # Books you actually hold accounts at. Empty = alert on every book.
@@ -90,6 +104,13 @@ class Config:
     book_fee_pct: dict = None
 
     def __post_init__(self):
+        if self.dfs_entries is None:
+            # 2-pick power entries paying 3x -> leg breakeven 57.74%
+            object.__setattr__(self, "dfs_entries", {
+                "underdog": (2, 3.0),
+                "sleeper": (2, 3.0),
+                "prizepicks": (2, 3.0),
+            })
         if self.sgo_league_map is None:
             object.__setattr__(self, "sgo_league_map", {
                 "MLB": "baseball_mlb", "WNBA": "basketball_wnba",

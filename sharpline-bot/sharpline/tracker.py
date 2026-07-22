@@ -173,6 +173,31 @@ class Tracker:
 
     # ---------- manual grading (props) ----------
 
+    def pending_prop_rows(self) -> list:
+        """Ungraded player-prop rows: (key, commence, market, selection)."""
+        return self.conn.execute(
+            "SELECT key, commence, market, selection FROM tracked "
+            "WHERE result IS NULL AND market LIKE 'player_%'"
+        ).fetchall()
+
+    def set_result(self, key: str, result: str) -> bool:
+        cur = self.conn.execute(
+            "UPDATE tracked SET result = ?, graded_ts = ? "
+            "WHERE key = ? AND result IS NULL",
+            (result, _now(), key))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def graded_since(self, ts: float) -> list:
+        """Rows graded after ts: (key, selection, book, price, result,
+        clv_pct, graded_ts). Drives Supabase result sync + Discord
+        settle notices."""
+        return self.conn.execute(
+            "SELECT key, selection, book, price, result, clv_pct, graded_ts "
+            "FROM tracked WHERE graded_ts IS NOT NULL AND graded_ts > ? "
+            "ORDER BY graded_ts", (ts,)
+        ).fetchall()
+
     def pending(self, props_only: bool = False) -> list:
         """Ungraded rows, oldest first: (key, commence, ev_open, clv_pct)."""
         rows = self.conn.execute(
