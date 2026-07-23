@@ -66,6 +66,7 @@ class SupabaseWriter:
             "stake_units": round(edge.stake_units, 2),
             "anchor": edge.anchor,
             "deeplink": edge.deeplink or None,
+            "anchor_probs": edge.anchor_probs or None,
             "depth_note": edge.depth or None,
             "alerted_at": datetime.now(timezone.utc).isoformat(),
         }

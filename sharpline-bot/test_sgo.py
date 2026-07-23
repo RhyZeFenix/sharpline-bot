@@ -23,6 +23,9 @@ SGO_EVENT = {
     "teams": {"home": {"names": {"long": "Kansas City Royals"}},
               "away": {"names": {"long": "Minnesota Twins"}}},
     "players": {"BOBBY_WITT_JR_MLB": {"name": "Bobby Witt Jr."}},
+    "links": {"bookmakers": {
+        "draftkings": "https://sportsbook.draftkings.com/event/123",
+        "betonline": "https://sports.betonline.ag/game/456"}},
     "odds": {
         # game lines — FanDuel is SOFT here; pinnacle entry must be dropped
         "points-home-game-ml-home": {
@@ -161,6 +164,12 @@ def test_normalize():
     assert over["point"] == 1.5 and over["description"] == "Bobby Witt Jr."
     assert is_prop("player_battingBases")
     assert not any("1h" in m for m in books.get("fanduel", {})), "period leak"
+    # event-page link fallback lands on books without betslip deeplinks
+    dk_ml = [o for o in books["draftkings"]["h2h"]][0]
+    assert dk_ml.get("deeplink") == "https://sportsbook.draftkings.com/event/123"
+    bo_ml = [o for o in books["betonlineag"]["h2h"]][0]
+    assert bo_ml.get("deeplink") == "https://sports.betonline.ag/game/456", \
+        "fallback must use the RAW book id before remapping"
     assert "spreads" not in books.get("fanduel", {}), "unavailable odds leak"
 
 

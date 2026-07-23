@@ -235,6 +235,8 @@ def normalize_event(ev: dict, league_map: Dict[str, str]) -> Optional[dict]:
     home = _team_name(ev, "home")
     away = _team_name(ev, "away")
     sport_id = ev.get("sportID") or ""
+    # per-book event-page URLs — fallback when no betslip deeplink exists
+    book_links = (ev.get("links") or {}).get("bookmakers") or {}
 
     # per-book accumulation: book -> market_key -> list of outcomes
     per_book: Dict[str, Dict[str, list]] = {}
@@ -257,8 +259,9 @@ def normalize_event(ev: dict, league_map: Dict[str, str]) -> Optional[dict]:
             if dec is None or dec <= 1.0:
                 continue
             outcome = {"name": name, "price": dec}
-            if bo.get("deeplink"):
-                outcome["deeplink"] = bo["deeplink"]
+            dl = bo.get("deeplink") or book_links.get(raw_book)
+            if dl:
+                outcome["deeplink"] = dl
             if desc:
                 outcome["description"] = desc
             if pt_field:

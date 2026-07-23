@@ -55,6 +55,7 @@ class Edge:
     anchor: str
     depth: str = ""
     deeplink: str = ""      # direct add-to-betslip URL when the book provides one
+    anchor_probs: dict = None  # per-anchor devigged fair prob, e.g. {"pinnacle": 0.63}
 
     @property
     def key(self) -> str:
@@ -189,6 +190,7 @@ def scan_event(event: dict, sport: str, cfg: Config,
     num: Dict[Tuple, float] = {}
     den: Dict[Tuple, float] = {}
     contributors: Dict[Tuple, List[str]] = {}
+    comp: Dict[Tuple, dict] = {}   # per-anchor raw fair probs (site reweighting)
     for b in sharps:
         bkey = b["key"]
         for k, p in _sharp_fairs(b, cfg).items():
@@ -196,6 +198,7 @@ def scan_event(event: dict, sport: str, cfg: Config,
             num[k] = num.get(k, 0.0) + w * p
             den[k] = den.get(k, 0.0) + w
             contributors.setdefault(k, []).append(bkey)
+            comp.setdefault(k, {})[bkey] = round(p, 5)
     consensus = {k: num[k] / den[k] for k in num}
 
     event_label = f"{event.get('away_team','?')} @ {event.get('home_team','?')}"
@@ -259,6 +262,7 @@ def scan_event(event: dict, sport: str, cfg: Config,
                         depth=(f"{n_picks}-pick {mult:g}x | leg BE "
                                f"{p_be * 100:.1f}% | leg edge {leg_edge:+.1f}%"),
                         deeplink=so.get("deeplink", ""),
+                        anchor_probs=comp.get(k),
                     ))
                     continue
 
@@ -281,5 +285,6 @@ def scan_event(event: dict, sport: str, cfg: Config,
                         p_fair, price, cfg.kelly_fraction, cfg.bankroll_units),
                     anchor="+".join(contribs),
                     deeplink=so.get("deeplink", ""),
+                    anchor_probs=comp.get(k),
                 ))
     return edges
