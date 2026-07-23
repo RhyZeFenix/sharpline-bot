@@ -69,23 +69,41 @@ class DiscordAlerter:
         if not self.url:
             log.info("No webhook set — printing edge:\n%s", self._text(edge))
             return True
+        # DFS pick'em entries aren't priced bets: odds holds the entry
+        # payout multiplier and EV is for the full entry, so the embed
+        # frames it as an entry leg rather than a bookable price.
+        is_dfs = "-pick" in (edge.depth or "")
+        if is_dfs:
+            title = f"🧩 +{edge.ev:.2f}% entry EV — {edge.selection}"
+            price_field = {"name": "Entry pays",
+                           "value": f"{edge.odds:g}x (both legs must hit)",
+                           "inline": True}
+            stake_name = "Entry stake (¼ Kelly)"
+        else:
+            title = f"🎯 +{edge.ev:.2f}% EV — {edge.selection}"
+            price_field = {"name": "Price",
+                           "value": f"{edge.odds:.3f} ({american(edge.odds)})",
+                           "inline": True}
+            stake_name = "Stake (¼ Kelly)"
         embed = {
-            "title": f"🎯 +{edge.ev:.2f}% EV — {edge.selection}",
+            "title": title,
             "description": edge.event,
-            "color": 0x2ECC71 if edge.ev >= 4 else 0xF1C40F,
+            "color": (0x9B59B6 if is_dfs else
+                      0x2ECC71 if edge.ev >= 4 else 0xF1C40F),
             "fields": [
                 {"name": "Book", "value": edge.book, "inline": True},
-                {"name": "Price", "value": f"{edge.odds:.3f} ({american(edge.odds)})", "inline": True},
+                price_field,
                 {"name": "Fair", "value": f"{edge.fair_odds:.3f} ({american(edge.fair_odds)})", "inline": True},
                 {"name": "Fair Win%", "value": f"{edge.fair_prob*100:.1f}%", "inline": True},
-                {"name": "Stake (¼ Kelly)", "value": f"{edge.stake_units:.2f}u", "inline": True},
+                {"name": stake_name, "value": f"{edge.stake_units:.2f}u", "inline": True},
                 {"name": "Market", "value": f"{edge.market} · {edge.sport}", "inline": True},
             ],
             "footer": {"text": f"anchor: {edge.anchor} · starts {edge.commence}"},
         }
         if edge.depth:
             embed["fields"].append(
-                {"name": "Liquidity", "value": edge.depth[:1000], "inline": False})
+                {"name": "Entry" if is_dfs else "Liquidity",
+                 "value": edge.depth[:1000], "inline": False})
         try:
             r = requests.post(self.url, json={"embeds": [embed]}, timeout=10)
             if r.status_code == 429:
