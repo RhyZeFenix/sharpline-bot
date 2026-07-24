@@ -118,14 +118,19 @@ class Config:
                 "NHL": "icehockey_nhl",
             })
         if self.sharp_weights is None:
-            object.__setattr__(self, "sharp_weights",
-                               {"pinnacle": 0.70, "betonlineag": 0.20, "lowvig": 0.10})
+            # Pinnacle-led game-line consensus. Circa contributes nothing
+            # until the SGO plan carries it (weights renormalize over the
+            # anchors actually present). Exchanges are secondaries only:
+            # thin liquidity + commission make them noisy references.
+            # Sporttrade is deliberately NOT an anchor so it stays
+            # sweepable for alerts (US-bettable, thinnest liquidity).
+            object.__setattr__(self, "sharp_weights", {
+                "pinnacle": 0.55, "circa": 0.15, "bookmakereu": 0.12,
+                "betfairexchange": 0.10, "matchbook": 0.08})
         if self.sharp_weights_props is None:
-            # FanDuel-anchored prop consensus. Pinnacle/BetOnline post
-            # some props and serve as secondaries where present; weights
-            # renormalize over whichever anchors actually price a market.
+            # FanDuel-anchored props; Circa joins on Pro.
             object.__setattr__(self, "sharp_weights_props",
-                               {"fanduel": 0.60, "pinnacle": 0.25, "betonlineag": 0.15})
+                               {"fanduel": 0.55, "circa": 0.25, "pinnacle": 0.20})
         if self.book_fee_pct is None:
             object.__setattr__(self, "book_fee_pct",
                                {"kalshi": 1.5, "polymarket": 0.0,

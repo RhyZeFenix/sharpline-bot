@@ -42,6 +42,12 @@ SGO_EVENT = {
             "betTypeID": "ml", "sideID": "away",
             "byBookmaker": _bb(fanduel={"odds": "-125"},
                                draftkings={"odds": "-130"})},
+        # team total (home) — must map to team_totals with team as desc
+        "points-home-game-ou-over": {
+            "statID": "points", "statEntityID": "home", "periodID": "game",
+            "betTypeID": "ou", "sideID": "over",
+            "byBookmaker": _bb(
+                draftkings={"odds": "-115", "overUnder": "4.5"})},
         # totals with per-book line
         "points-all-game-ou-over": {
             "statID": "points", "statEntityID": "all", "periodID": "game",
@@ -159,6 +165,9 @@ def test_normalize():
     assert "pinnacle" not in books, "SGO pinnacle entries must be dropped"
     assert "betonlineag" in books, "betonline must remap to betonlineag"
     assert "player_battingBases" in books["fanduel"], "prop market missing"
+    tt = books["draftkings"].get("team_totals")
+    assert tt and tt[0]["description"] == "Kansas City Royals" \
+        and tt[0]["point"] == 4.5, f"team total wrong: {tt}"
     over = [o for o in books["fanduel"]["player_battingBases"]
             if o["name"] == "Over"][0]
     assert over["point"] == 1.5 and over["description"] == "Bobby Witt Jr."

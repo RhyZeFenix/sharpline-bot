@@ -84,6 +84,12 @@ def _classify(odd: dict, sport_id: str, home: str, away: str, ev: dict):
         return ("spreads", home if ent == "home" else away, None, "spread")
     if bet == "ou" and ent == "all":
         return ("totals", side.capitalize(), None, "overUnder")
+    if bet == "ou" and ent in ("home", "away"):
+        # team totals — Pinnacle doesn't supply these via our game-line
+        # pull, so they clear the consensus bar only when 2+ secondary
+        # anchors (Circa/BookMaker.eu/Betfair/Matchbook) price them.
+        return ("team_totals", side.capitalize(),
+                home if ent == "home" else away, "overUnder")
     return None
 
 # auth header per SGO's Postman collection
