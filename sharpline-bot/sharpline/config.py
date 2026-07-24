@@ -97,7 +97,11 @@ class Config:
     request_timeout: int = 20
 
     # Books you actually hold accounts at. Empty = alert on every book.
-    my_books: tuple = ()
+    my_books: tuple = ("fanduel", "draftkings", "betmgm", "caesars",
+                   "espnbet", "fanatics", "betrivers", "hardrockbet",
+                   "bet365", "fliff",
+                   "novig", "prophetx", "kalshi", "polymarket", "sporttrade",
+                   "underdog", "sleeper", "prizepicks")
 
     # EV haircut (percentage points) per book to account for exchange
     # fees/commission. VERIFY current fee schedules and adjust.
